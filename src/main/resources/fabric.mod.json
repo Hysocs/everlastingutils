@@ -1,0 +1,53 @@
+{
+	"schemaVersion": 1,
+	"id": "everlastingutils",
+	"version": "${version}",
+	"name": "EverlastingUtils",
+	"description": "e-utils is a small utility mod",
+	"authors": [
+		"Hysocs"
+	],
+	"contact": {
+		"discord": "https://discord.gg/nrENPTmQKt"
+	},
+	"license": "GNU Lesser General Public License v3",
+	"icon": "assets/everlastingutils/icon.png",
+	"environment": "*",
+	"entrypoints": {
+		"main": [
+			{
+				"value": "com.everlastingutils.EverlastingUtils",
+				"adapter": "kotlin"
+			}
+		],
+		"client": [
+			{
+				"value": "com.everlastingutils.EverlastingUtilsClient",
+				"adapter": "kotlin"
+			}
+		],
+		"fabric-datagen": [
+			{
+				"value": "com.everlastingutils.EverlastingUtilsDataGenerator",
+				"adapter": "kotlin"
+			}
+		]
+	},
+	"mixins": [
+		"everlastingutils.mixins.json",
+		{
+			"config": "everlastingutils.client.mixins.json",
+			"environment": "client"
+		}
+	],
+	"depends": {
+		"fabricloader": ">=0.16.10",
+		"minecraft": "~1.21.1",
+		"java": ">=21",
+		"fabric-api": "*",
+		"fabric-language-kotlin": "*"
+	},
+	"suggests": {
+		"another-mod": "*"
+	}
+}
