@@ -17,7 +17,7 @@ import java.util.*
 object EverlastingUtils : ModInitializer {
     private val logger = LoggerFactory.getLogger("everlastingutils")
     const val MOD_ID = "everlastingutils"
-    const val VERSION = "1.0.3"
+    const val VERSION = "1.0.5"
 
     // ANSI color and format codes
     object Colors {

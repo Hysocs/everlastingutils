@@ -8,7 +8,7 @@
 		"Hysocs"
 	],
 	"contact": {
-		"discord": "https://discord.gg/nrENPTmQKt"
+		"discord": "https://discord.gg/KQyPEye7CT"
 	},
 	"license": "GNU Lesser General Public License v3",
 	"icon": "assets/everlastingutils/icon.png",
@@ -17,12 +17,6 @@
 		"main": [
 			{
 				"value": "com.everlastingutils.EverlastingUtils",
-				"adapter": "kotlin"
-			}
-		],
-		"client": [
-			{
-				"value": "com.everlastingutils.EverlastingUtilsClient",
 				"adapter": "kotlin"
 			}
 		],
@@ -41,8 +35,8 @@
 		}
 	],
 	"depends": {
-		"fabricloader": ">=0.16.10",
-		"minecraft": "~1.21.1",
+		"fabricloader": ">=0.14.10",
+		"minecraft": "*",
 		"java": ">=21",
 		"fabric-api": "*",
 		"fabric-language-kotlin": "*"

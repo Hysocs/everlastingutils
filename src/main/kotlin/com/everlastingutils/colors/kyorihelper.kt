@@ -1,13 +1,15 @@
 package com.everlastingutils.colors
 
 import net.kyori.adventure.text.Component
-import net.kyori.adventure.text.format.TextColor
-import net.kyori.adventure.text.minimessage.MiniMessage
 import net.kyori.adventure.text.format.NamedTextColor
 import net.kyori.adventure.text.format.Style
+import net.kyori.adventure.text.format.TextColor
 import net.kyori.adventure.text.format.TextDecoration
 import net.kyori.adventure.text.format.TextDecoration.State
+import net.kyori.adventure.text.minimessage.MiniMessage
+import net.kyori.adventure.text.serializer.gson.GsonComponentSerializer
 import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer
+import net.minecraft.registry.RegistryWrapper
 import net.minecraft.text.Text
 
 object KyoriHelper {
@@ -54,12 +56,15 @@ object KyoriHelper {
         return miniMessage.stripTags(input)
     }
 
-    /**
-     * Parse and convert to Minecraft Text
-     */
-    fun parseToMinecraft(message: String): Text {
-        val component = parse(message)
-        val legacyText = legacySerializer.serialize(component)
-        return Text.literal(legacyText)
+
+    fun parseToMinecraft(message: String, registryWrapper: RegistryWrapper.WrapperLookup): Text {
+        // Parse the message into a Kyori Adventure Component
+        val component = parse(message) // Assume 'parse' is a function converting String to Component
+        // Serialize to JSON
+        val json = GsonComponentSerializer.gson().serialize(component)
+        // Deserialize to Minecraft Text with the required registry wrapper
+        val text = Text.Serialization.fromJson(json, registryWrapper)
+        // Handle null case
+        return text ?: throw IllegalArgumentException("Failed to deserialize message: $message")
     }
 }
