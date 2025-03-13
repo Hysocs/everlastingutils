@@ -8,16 +8,13 @@ import net.kyori.adventure.text.format.TextDecoration
 import net.kyori.adventure.text.format.TextDecoration.State
 import net.kyori.adventure.text.minimessage.MiniMessage
 import net.kyori.adventure.text.serializer.gson.GsonComponentSerializer
-import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer
+
 import net.minecraft.registry.RegistryWrapper
 import net.minecraft.text.Text
 
 object KyoriHelper {
     private val miniMessage = MiniMessage.miniMessage()
-    private val legacySerializer = LegacyComponentSerializer.builder()
-        .character('§')
-        .hexColors()
-        .build()
+
 
     fun parse(message: String): Component {
         return miniMessage.deserialize(message)
