@@ -46,35 +46,96 @@ class ConfigMigrationResult<T : ConfigData>(
 
 class JsoncParser {
     companion object {
-        private val SINGLE_LINE_COMMENT = """//[^\n]*""".toRegex()
-        private val MULTI_LINE_COMMENT = """/\*[\s\S]*?\*/""".toRegex()
-        private val CONFIG_SECTION = """\/\*\s*CONFIG_SECTION\s*\*\/([\s\S]*?)(?:\/\*\s*END_CONFIG_SECTION\s*\*\/|$)""".toRegex()
         private val TRAILING_COMMA = """,(\s*[}\]])""".toRegex()
     }
 
     fun parseWithComments(content: String): Pair<String, Map<String, String>> {
         val comments = mutableMapOf<String, String>()
-        var processedContent = content
-
-        // Remove trailing commas before JSON parsing
-        processedContent = processedContent.replace(TRAILING_COMMA, "$1")
-
-        content.split("\n").forEach { line ->
-            SINGLE_LINE_COMMENT.find(line)?.let { match ->
-                val propertyName = line.substringBefore("//").trim()
-                if (propertyName.isNotBlank()) {
-                    comments[propertyName] = match.value.substring(2).trim()
-                }
-            }
-        }
-
-        processedContent = processedContent.replace(SINGLE_LINE_COMMENT, "")
-        processedContent = processedContent.replace(MULTI_LINE_COMMENT, "")
-
+        val jsonContent = removeComments(content, comments)
+        val processedContent = jsonContent.replace(TRAILING_COMMA, "$1")
         return processedContent.trim() to comments
     }
 
+    private fun removeComments(content: String, comments: MutableMap<String, String>): String {
+        val result = StringBuilder()
+        var i = 0
+        var inString = false
+        var commentStart = -1
+        var propertyBeforeComment = ""
+
+        while (i < content.length) {
+            val c = content[i]
+
+            if (inString) {
+                result.append(c)
+                if (c == '"' && !isEscaped(content, i)) {
+                    inString = false
+                }
+                i++
+            } else {
+                when {
+                    c == '"' && !isEscaped(content, i) -> {
+                        inString = true
+                        result.append(c)
+                        i++
+                    }
+                    c == '/' && i + 1 < content.length && content[i + 1] == '/' -> {
+                        // Start of single-line comment
+                        commentStart = i
+                        val commentEnd = content.indexOf('\n', i).let { if (it == -1) content.length else it }
+                        val commentText = content.substring(i + 2, commentEnd).trim()
+                        if (propertyBeforeComment.isNotBlank()) {
+                            comments[propertyBeforeComment] = commentText
+                        }
+                        i = commentEnd
+                        if (i < content.length) {
+                            result.append('\n')
+                            i++
+                        }
+                    }
+                    c == '/' && i + 1 < content.length && content[i + 1] == '*' -> {
+                        // Start of multi-line comment
+                        commentStart = i
+                        val commentEnd = content.indexOf("*/", i + 2)
+                        if (commentEnd != -1) {
+                            i = commentEnd + 2
+                        } else {
+                            i = content.length
+                        }
+                    }
+                    else -> {
+                        result.append(c)
+                        if (c == ':' && commentStart == -1) {
+                            // Extract property name before this colon
+                            val lineSoFar = result.toString().trim()
+                            val lastProperty = lineSoFar.substringAfterLast('"', "")
+                                .substringBeforeLast(':', "")
+                                .trim().removeSurrounding("\"")
+                            if (lastProperty.isNotBlank()) {
+                                propertyBeforeComment = lastProperty
+                            }
+                        }
+                        i++
+                    }
+                }
+            }
+        }
+        return result.toString()
+    }
+
+    private fun isEscaped(content: String, index: Int): Boolean {
+        var count = 0
+        var j = index - 1
+        while (j >= 0 && content[j] == '\\') {
+            count++
+            j--
+        }
+        return count % 2 != 0
+    }
+
+    // Keep extractConfigSection as is if still needed
     fun extractConfigSection(content: String): String? {
+        val CONFIG_SECTION = """\/\*\s*CONFIG_SECTION\s*\*\/([\s\S]*?)(?:\/\*\s*END_CONFIG_SECTION\s*\*\/|$)""".toRegex()
         return CONFIG_SECTION.find(content)?.groupValues?.get(1)
     }
 }

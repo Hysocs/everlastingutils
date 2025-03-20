@@ -17,7 +17,7 @@ import java.util.*
 object EverlastingUtils : ModInitializer {
     private val logger = LoggerFactory.getLogger("everlastingutils")
     const val MOD_ID = "everlastingutils"
-    const val VERSION = "1.0.5"
+    const val VERSION = "1.0.6"
 
     // ANSI color and format codes
     object Colors {
@@ -116,7 +116,7 @@ object EverlastingUtils : ModInitializer {
         logger.info("$prefix ${Colors.brightBlack("Thread Count: ${Thread.activeCount()}")}")
         logger.info("$prefix ${Colors.brightBlack("Memory: ${Runtime.getRuntime().maxMemory() / 1024 / 1024}MB allocated")}")
         logger.info("$prefix ${Colors.brightBlack("Report issues at: https://github.com/Hysocs/EverlastingUtils")}")
-        logger.info("$prefix ${Colors.brightBlack("Or join our discord at: https://discord.gg/nrENPTmQKt")}")
+        logger.info("$prefix ${Colors.brightBlack("Or join our discord at: https://discord.gg/KQyPEye7CT")}")
         logger.info("$prefix ${Colors.boldPurple("============================")}")
 
 

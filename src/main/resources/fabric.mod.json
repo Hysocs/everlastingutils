@@ -28,11 +28,7 @@
 		]
 	},
 	"mixins": [
-		"everlastingutils.mixins.json",
-		{
-			"config": "everlastingutils.client.mixins.json",
-			"environment": "client"
-		}
+
 	],
 	"depends": {
 		"fabricloader": ">=0.14.10",
