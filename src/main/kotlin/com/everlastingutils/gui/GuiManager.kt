@@ -32,12 +32,12 @@ object CustomGui {
     private val logger = LoggerFactory.getLogger(CustomGui::class.java)
 
     /**
-     * Opens a custom GUI for the player.
+     * Opens a custom GUI for the player using a double chest (6 rows).
      *
      * @param player The player to open the GUI for.
      * @param title The title of the GUI.
      * @param layout The list of ItemStacks to display in the GUI.
-     * @param onInteract Callback for when a player interacts with a slot. Ensure to validate inputs and check permissions.
+     * @param onInteract Callback for when a player interacts with a slot.
      * @param onClose Callback for when the GUI is closed.
      */
     fun openGui(
@@ -47,9 +47,32 @@ object CustomGui {
         onInteract: (InteractionContext) -> Unit,
         onClose: (Inventory) -> Unit
     ) {
+        // Delegate to the overloaded method with 6 rows (double chest) as default
+        openGui(player, title, layout, 6, onInteract, onClose)
+    }
+
+    /**
+     * Opens a custom GUI for the player with a specified number of container rows.
+     * For example, use rows = 3 for a single chest GUI.
+     *
+     * @param player The player to open the GUI for.
+     * @param title The title of the GUI.
+     * @param layout The list of ItemStacks to display in the GUI.
+     * @param rows Number of rows for the container (typically 3 for a single chest, 6 for a double chest).
+     * @param onInteract Callback for when a player interacts with a slot.
+     * @param onClose Callback for when the GUI is closed.
+     */
+    fun openGui(
+        player: ServerPlayerEntity,
+        title: String,
+        layout: List<ItemStack>,
+        rows: Int,
+        onInteract: (InteractionContext) -> Unit,
+        onClose: (Inventory) -> Unit
+    ) {
         val factory = SimpleNamedScreenHandlerFactory(
             { syncId, inv, _ ->
-                CustomScreenHandler(syncId, inv, layout, onInteract, onClose)
+                CustomScreenHandler(syncId, inv, layout, rows, onInteract, onClose)
             },
             Text.literal(title)
         )
@@ -131,44 +154,56 @@ class CustomScreenHandler(
     syncId: Int,
     playerInventory: PlayerInventory,
     layout: List<ItemStack>,
+    val rows: Int,
     private var onInteract: ((InteractionContext) -> Unit)?,
     private var onClose: ((Inventory) -> Unit)?
-) : ScreenHandler(ScreenHandlerType.GENERIC_9X6, syncId) {
+) : ScreenHandler(
+    when (rows) {
+        3 -> ScreenHandlerType.GENERIC_9X3
+        6 -> ScreenHandlerType.GENERIC_9X6
+        else -> ScreenHandlerType.GENERIC_9X6
+    }, syncId) {
 
+    private val containerSize = rows * 9
     private val virtualLayout = mutableListOf<ItemStack>()
     private lateinit var player: ServerPlayerEntity
 
     init {
-        virtualLayout.addAll(layout.take(54).map { it.copy() })
-        while (virtualLayout.size < 54) virtualLayout.add(ItemStack.EMPTY)
+        virtualLayout.addAll(layout.take(containerSize).map { it.copy() })
+        while (virtualLayout.size < containerSize) virtualLayout.add(ItemStack.EMPTY)
 
         val dummyInventory = object : Inventory {
             override fun clear() {}
-            override fun size() = 54
+            override fun size() = containerSize
             override fun isEmpty() = virtualLayout.all { it.isEmpty }
-            override fun getStack(slot: Int) = if (slot in 0 until 54) virtualLayout[slot] else ItemStack.EMPTY
+            override fun getStack(slot: Int) = if (slot in 0 until containerSize) virtualLayout[slot] else ItemStack.EMPTY
             override fun removeStack(slot: Int, amount: Int) = ItemStack.EMPTY
             override fun removeStack(slot: Int) = ItemStack.EMPTY
             override fun setStack(slot: Int, stack: ItemStack) {
-                if (slot in 0 until 54) {
+                if (slot in 0 until containerSize) {
                     virtualLayout[slot] = stack.copy()
                 }
             }
             override fun markDirty() {}
             override fun canPlayerUse(player: PlayerEntity) = true
         }
-        for (i in 0 until 54) {
+        // Add container slots (variable based on rows)
+        for (i in 0 until containerSize) {
             addSlot(InteractiveSlot(dummyInventory, i, false))
         }
 
+        // Adjust player's inventory slot positions based on container size.
+        // For double chest (rows == 6) the positions remain the same,
+        // for a single chest (rows == 3) they are shifted upward.
+        val offset = (6 - rows) * 6  // 0 for 6 rows, 18 for 3 rows
         for (i in 0..2) {
             for (j in 0..8) {
                 val index = j + i * 9 + 9
-                addSlot(Slot(playerInventory, index, 8 + j * 18, 84 + i * 18))
+                addSlot(Slot(playerInventory, index, 8 + j * 18, (84 - offset) + i * 18))
             }
         }
         for (k in 0..8) {
-            addSlot(Slot(playerInventory, k, 8 + k * 18, 142))
+            addSlot(Slot(playerInventory, k, 8 + k * 18, 142 - offset))
         }
 
         if (playerInventory.player is ServerPlayerEntity) {
@@ -182,7 +217,7 @@ class CustomScreenHandler(
         if (slotIndex < 0 || slotIndex >= slots.size) {
             return
         }
-        val isGuiSlot = slotIndex in 0 until 54
+        val isGuiSlot = slotIndex in 0 until containerSize
         if (isGuiSlot && player is ServerPlayerEntity) {
             val stack = virtualLayout[slotIndex]
             val clickType = if (button == 0) ClickType.LEFT else ClickType.RIGHT
@@ -209,8 +244,8 @@ class CustomScreenHandler(
         super.onClosed(player)
         onClose?.invoke(object : Inventory {
             override fun clear() {}
-            override fun size() = 54
-            override fun isEmpty() = true
+            override fun size() = containerSize
+            override fun isEmpty() = virtualLayout.all { it.isEmpty }
             override fun getStack(slot: Int) = virtualLayout[slot]
             override fun removeStack(slot: Int, amount: Int) = ItemStack.EMPTY
             override fun removeStack(slot: Int) = ItemStack.EMPTY
@@ -224,8 +259,8 @@ class CustomScreenHandler(
 
     fun updateInventory(newLayout: List<ItemStack>) {
         virtualLayout.clear()
-        virtualLayout.addAll(newLayout.take(54).map { it.copy() })
-        while (virtualLayout.size < 54) virtualLayout.add(ItemStack.EMPTY)
+        virtualLayout.addAll(newLayout.take(containerSize).map { it.copy() })
+        while (virtualLayout.size < containerSize) virtualLayout.add(ItemStack.EMPTY)
         sendContentUpdates()
     }
 }
