@@ -1,5 +1,6 @@
 package com.everlastingutils.gui
 
+import com.everlastingutils.colors.KyoriHelper
 import net.minecraft.entity.player.PlayerEntity
 import net.minecraft.entity.player.PlayerInventory
 import net.minecraft.inventory.Inventory
@@ -22,20 +23,7 @@ object AnvilGuiManager {
     private val logger = LoggerFactory.getLogger(AnvilGuiManager::class.java)
 
     /**
-     * Opens an anvil GUI for the player.
-     *
-     * @param player The player to open the GUI for.
-     * @param id A unique identifier for the GUI.
-     * @param title The title of the GUI.
-     * @param initialText The initial text in the anvil's text field.
-     * @param leftItem The item to display in the left slot.
-     * @param rightItem The item to display in the right slot.
-     * @param resultItem The item to display in the result slot.
-     * @param onLeftClick Callback for when the left slot is clicked. Ensure to validate inputs and check permissions.
-     * @param onRightClick Callback for when the right slot is clicked. Ensure to validate inputs and check permissions.
-     * @param onResultClick Callback for when the result slot is clicked. Ensure to validate inputs and check permissions.
-     * @param onTextChange Callback for when the text field changes. Ensure to validate and sanitize the input.
-     * @param onClose Callback for when the GUI is closed.
+     * Original method for backwards compatibility - uses Text.literal
      */
     fun openAnvilGui(
         player: ServerPlayerEntity,
@@ -67,16 +55,78 @@ object AnvilGuiManager {
     }
 
     /**
-     * Opens an anvil GUI with a simplified interaction callback.
-     *
-     * @param player The player to open the GUI for.
-     * @param id A unique identifier for the GUI.
-     * @param title The title of the GUI.
-     * @param initialText The initial text in the anvil's text field.
-     * @param layout Map of slot indices to ItemStacks.
-     * @param onInteract Callback for slot interactions. Ensure to validate inputs and check permissions.
-     * @param onTextChange Callback for text changes. Ensure to validate and sanitize the input.
-     * @param onClose Callback for when the GUI is closed.
+     * New method that supports MiniMessage formatted titles
+     */
+    fun openAnvilGuiFormatted(
+        player: ServerPlayerEntity,
+        id: String,
+        title: String,
+        initialText: String = "",
+        leftItem: ItemStack? = null,
+        rightItem: ItemStack? = null,
+        resultItem: ItemStack? = null,
+        onLeftClick: ((AnvilInteractionContext) -> Unit)? = null,
+        onRightClick: ((AnvilInteractionContext) -> Unit)? = null,
+        onResultClick: ((AnvilInteractionContext) -> Unit)? = null,
+        onTextChange: ((String) -> Unit)? = null,
+        onClose: ((Inventory) -> Unit)? = null
+    ) {
+        val formattedTitle = try {
+            KyoriHelper.parseToMinecraft(title, player.server.registryManager)
+        } catch (e: Exception) {
+            logger.warn("Failed to parse MiniMessage title, falling back to literal: ${e.message}")
+            Text.literal(title)
+        }
+
+        val factory = SimpleNamedScreenHandlerFactory(
+            { syncId, inv, _ ->
+                FullyModularAnvilScreenHandler(
+                    syncId, inv, id,
+                    initialText,
+                    leftItem, rightItem, resultItem,
+                    onLeftClick, onRightClick, onResultClick,
+                    onTextChange, onClose
+                )
+            },
+            formattedTitle
+        )
+        player.openHandledScreen(factory)
+    }
+
+    /**
+     * Alternative method that accepts Text directly
+     */
+    fun openAnvilGuiWithText(
+        player: ServerPlayerEntity,
+        id: String,
+        title: Text,
+        initialText: String = "",
+        leftItem: ItemStack? = null,
+        rightItem: ItemStack? = null,
+        resultItem: ItemStack? = null,
+        onLeftClick: ((AnvilInteractionContext) -> Unit)? = null,
+        onRightClick: ((AnvilInteractionContext) -> Unit)? = null,
+        onResultClick: ((AnvilInteractionContext) -> Unit)? = null,
+        onTextChange: ((String) -> Unit)? = null,
+        onClose: ((Inventory) -> Unit)? = null
+    ) {
+        val factory = SimpleNamedScreenHandlerFactory(
+            { syncId, inv, _ ->
+                FullyModularAnvilScreenHandler(
+                    syncId, inv, id,
+                    initialText,
+                    leftItem, rightItem, resultItem,
+                    onLeftClick, onRightClick, onResultClick,
+                    onTextChange, onClose
+                )
+            },
+            title
+        )
+        player.openHandledScreen(factory)
+    }
+
+    /**
+     * Original simplified method for backwards compatibility
      */
     fun openAnvilGui(
         player: ServerPlayerEntity,
@@ -103,6 +153,55 @@ object AnvilGuiManager {
             onClose = onClose
         )
     }
+
+    /**
+     * New simplified method with MiniMessage support
+     */
+    fun openAnvilGuiFormatted(
+        player: ServerPlayerEntity,
+        id: String,
+        title: String,
+        initialText: String = "",
+        layout: Map<Int, ItemStack> = emptyMap(),
+        onInteract: ((AnvilInteractionContext) -> Unit)? = null,
+        onTextChange: ((String) -> Unit)? = null,
+        onClose: ((Inventory) -> Unit)? = null
+    ) {
+        openAnvilGuiFormatted(
+            player = player,
+            id = id,
+            title = title,
+            initialText = initialText,
+            leftItem = layout[0],
+            rightItem = layout[1],
+            resultItem = layout[2],
+            onLeftClick = onInteract?.let { handler -> { context -> handler(context) } },
+            onRightClick = onInteract?.let { handler -> { context -> handler(context) } },
+            onResultClick = onInteract?.let { handler -> { context -> handler(context) } },
+            onTextChange = onTextChange,
+            onClose = onClose
+        )
+    }
+
+    /**
+     * Extension function for convenience
+     */
+    fun ServerPlayerEntity.openAnvilGui(
+        id: String,
+        title: String,
+        initialText: String = "",
+        formatted: Boolean = false,
+        layout: Map<Int, ItemStack> = emptyMap(),
+        onInteract: ((AnvilInteractionContext) -> Unit)? = null,
+        onTextChange: ((String) -> Unit)? = null,
+        onClose: ((Inventory) -> Unit)? = null
+    ) {
+        if (formatted) {
+            openAnvilGuiFormatted(this, id, title, initialText, layout, onInteract, onTextChange, onClose)
+        } else {
+            openAnvilGui(this, id, title, initialText, layout, onInteract, onTextChange, onClose)
+        }
+    }
 }
 
 data class AnvilInteractionContext(
@@ -125,6 +224,7 @@ class InteractiveSlotAnvil(
     override fun canTakeItems(player: PlayerEntity) = isInteractive
 }
 
+// FullyModularAnvilScreenHandler remains unchanged
 class FullyModularAnvilScreenHandler(
     syncId: Int,
     playerInventory: PlayerInventory,
@@ -216,9 +316,6 @@ class FullyModularAnvilScreenHandler(
         super.onSlotClick(slotIndex, button, actionType, player)
     }
 
-    /**
-     * Blocks quick moving (shift-clicking) by always returning an empty stack.
-     */
     override fun quickMove(player: PlayerEntity, index: Int): ItemStack {
         return ItemStack.EMPTY // Explicitly disable shift-click transfers
     }

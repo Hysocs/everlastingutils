@@ -1,5 +1,6 @@
 package com.everlastingutils.gui
 
+import com.everlastingutils.colors.KyoriHelper
 import com.mojang.authlib.GameProfile
 import com.mojang.authlib.properties.Property
 import net.minecraft.component.DataComponentTypes
@@ -31,15 +32,7 @@ data class InteractionContext(
 object CustomGui {
     private val logger = LoggerFactory.getLogger(CustomGui::class.java)
 
-    /**
-     * Opens a custom GUI for the player using a double chest (6 rows).
-     *
-     * @param player The player to open the GUI for.
-     * @param title The title of the GUI.
-     * @param layout The list of ItemStacks to display in the GUI.
-     * @param onInteract Callback for when a player interacts with a slot.
-     * @param onClose Callback for when the GUI is closed.
-     */
+    // Original methods for backwards compatibility - these use Text.literal
     fun openGui(
         player: ServerPlayerEntity,
         title: String,
@@ -47,21 +40,9 @@ object CustomGui {
         onInteract: (InteractionContext) -> Unit,
         onClose: (Inventory) -> Unit
     ) {
-        // Delegate to the overloaded method with 6 rows (double chest) as default
         openGui(player, title, layout, 6, onInteract, onClose)
     }
 
-    /**
-     * Opens a custom GUI for the player with a specified number of container rows.
-     * For example, use rows = 3 for a single chest GUI.
-     *
-     * @param player The player to open the GUI for.
-     * @param title The title of the GUI.
-     * @param layout The list of ItemStacks to display in the GUI.
-     * @param rows Number of rows for the container (typically 3 for a single chest, 6 for a double chest).
-     * @param onInteract Callback for when a player interacts with a slot.
-     * @param onClose Callback for when the GUI is closed.
-     */
     fun openGui(
         player: ServerPlayerEntity,
         title: String,
@@ -77,6 +58,75 @@ object CustomGui {
             Text.literal(title)
         )
         player.openHandledScreen(factory)
+    }
+
+    // New overloaded methods that support MiniMessage formatting
+    fun openGuiFormatted(
+        player: ServerPlayerEntity,
+        title: String,
+        layout: List<ItemStack>,
+        onInteract: (InteractionContext) -> Unit,
+        onClose: (Inventory) -> Unit
+    ) {
+        openGuiFormatted(player, title, layout, 6, onInteract, onClose)
+    }
+
+    fun openGuiFormatted(
+        player: ServerPlayerEntity,
+        title: String,
+        layout: List<ItemStack>,
+        rows: Int,
+        onInteract: (InteractionContext) -> Unit,
+        onClose: (Inventory) -> Unit
+    ) {
+        val formattedTitle = try {
+            KyoriHelper.parseToMinecraft(title, player.server.registryManager)
+        } catch (e: Exception) {
+            logger.warn("Failed to parse MiniMessage title, falling back to literal: ${e.message}")
+            Text.literal(title)
+        }
+
+        val factory = SimpleNamedScreenHandlerFactory(
+            { syncId, inv, _ ->
+                CustomScreenHandler(syncId, inv, layout, rows, onInteract, onClose)
+            },
+            formattedTitle
+        )
+        player.openHandledScreen(factory)
+    }
+
+    // Alternative approach: Add a single method that accepts Text directly
+    fun openGuiWithText(
+        player: ServerPlayerEntity,
+        title: Text,
+        layout: List<ItemStack>,
+        rows: Int = 6,
+        onInteract: (InteractionContext) -> Unit,
+        onClose: (Inventory) -> Unit
+    ) {
+        val factory = SimpleNamedScreenHandlerFactory(
+            { syncId, inv, _ ->
+                CustomScreenHandler(syncId, inv, layout, rows, onInteract, onClose)
+            },
+            title
+        )
+        player.openHandledScreen(factory)
+    }
+
+    // Extension function for convenience (optional)
+    fun ServerPlayerEntity.openGui(
+        title: String,
+        layout: List<ItemStack>,
+        rows: Int = 6,
+        formatted: Boolean = false,
+        onInteract: (InteractionContext) -> Unit,
+        onClose: (Inventory) -> Unit
+    ) {
+        if (formatted) {
+            openGuiFormatted(this, title, layout, rows, onInteract, onClose)
+        } else {
+            openGui(this, title, layout, rows, onInteract, onClose)
+        }
     }
 
     fun createPlayerHeadButton(
@@ -105,6 +155,32 @@ object CustomGui {
         val newStack = item.copy()
         newStack.set(DataComponentTypes.ITEM_NAME, Text.literal(displayName))
         val loreText = lore.map { Text.literal(it) }
+        newStack.set(DataComponentTypes.LORE, LoreComponent(loreText))
+        return newStack
+    }
+
+    // New overloaded method for formatted button creation
+    fun createFormattedButton(
+        item: ItemStack,
+        displayName: String,
+        lore: List<String>,
+        player: ServerPlayerEntity
+    ): ItemStack {
+        val newStack = item.copy()
+        val formattedName = try {
+            KyoriHelper.parseToMinecraft(displayName, player.server.registryManager)
+        } catch (e: Exception) {
+            Text.literal(displayName)
+        }
+        newStack.set(DataComponentTypes.ITEM_NAME, formattedName)
+
+        val loreText = lore.map { line ->
+            try {
+                KyoriHelper.parseToMinecraft(line, player.server.registryManager)
+            } catch (e: Exception) {
+                Text.literal(line)
+            }
+        }
         newStack.set(DataComponentTypes.LORE, LoreComponent(loreText))
         return newStack
     }
@@ -150,6 +226,7 @@ object CustomGui {
     }
 }
 
+// CustomScreenHandler and InteractiveSlot remain unchanged
 class CustomScreenHandler(
     syncId: Int,
     playerInventory: PlayerInventory,
@@ -233,9 +310,6 @@ class CustomScreenHandler(
         }
     }
 
-    /**
-     * Blocks quick moving (shift-clicking) by always returning an empty stack.
-     */
     override fun quickMove(player: PlayerEntity, index: Int): ItemStack {
         return ItemStack.EMPTY // Explicitly disable shift-click transfers
     }
