@@ -3,11 +3,12 @@ package com.everlastingutils.scheduling
 import com.everlastingutils.utils.logDebug
 import net.minecraft.server.MinecraftServer
 import org.slf4j.LoggerFactory
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Centralized scheduler system for managing scheduled tasks across multiple mods.
@@ -57,16 +58,22 @@ object SchedulerManager {
     ): ScheduledFuture<*> {
         val scheduler = createScheduler(id)
         val future = scheduler.scheduleAtFixedRate({
+            if (!server.isRunning) {
+                return@scheduleAtFixedRate
+            }
             try {
                 server.executeSync {
-                    task()
+                    if (server.isRunning) {
+                        task()
+                    }
                 }
+            } catch (e: RejectedExecutionException) {
             } catch (e: Exception) {
                 logger.error("Error executing scheduled task in $id: ${e.message}", e)
             }
         }, initialDelay, period, unit)
 
-        tasks.computeIfAbsent(id) { ConcurrentHashMap.newKeySet<ScheduledFuture<*>>().toMutableList() }.add(future)
+        tasks.computeIfAbsent(id) { mutableListOf() }.add(future)
         return future
     }
 
@@ -89,16 +96,22 @@ object SchedulerManager {
     ): ScheduledFuture<*> {
         val scheduler = createScheduler(id)
         val future = scheduler.schedule({
+            if (!server.isRunning) {
+                return@schedule
+            }
             try {
                 server.executeSync {
-                    task()
+                    if (server.isRunning) {
+                        task()
+                    }
                 }
+            } catch (e: RejectedExecutionException) {
             } catch (e: Exception) {
                 logger.error("Error executing scheduled task in $id: ${e.message}", e)
             }
         }, delay, unit)
 
-        tasks.computeIfAbsent(id) { ConcurrentHashMap.newKeySet<ScheduledFuture<*>>().toMutableList() }.add(future)
+        tasks.computeIfAbsent(id) { mutableListOf() }.add(future)
         return future
     }
 
@@ -125,6 +138,7 @@ object SchedulerManager {
         cancelTasks(id)
         schedulers[id]?.shutdown()
         schedulers.remove(id)
+        tasks.remove(id) // Also remove the task list to prevent memory leaks
         logDebug("[SCHEDULER] Shut down scheduler: $id", "everlastingutils")
     }
 
