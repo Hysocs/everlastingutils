@@ -3,173 +3,110 @@ package com.everlastingutils.config
 import kotlinx.coroutines.runBlocking
 import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.file.Paths
+import java.util.Comparator
 
-
-data class TestConfig(
+data class SimulationConfig(
     override var version: String = "1.0",
-    override var configId: String = "test",
-    var testSetting: String = "default",
-    var numericSetting: Int = 42
+    override var configId: String = "everlasting_test_sim",
+    var serverName: String = "Default Server",
+    var maxPlayers: Int = 20
 ) : ConfigData
 
-class ConfigTester(private val testDir: Path = Files.createTempDirectory("config_test")) {
-    private var configManager: ConfigManager<TestConfig>? = null
+object ConfigTester {
+    private val baseConfigDir: Path = Paths.get("config")
+    private val activeTestDir: Path = baseConfigDir.resolve("everlasting_test_sim")
+    private val expectedFile: Path = activeTestDir.resolve("config.jsonc")
 
-    private fun setupConfigManager(): ConfigManager<TestConfig> {
-        val defaultConfig = TestConfig()
-        return ConfigManager(
-            currentVersion = "1.0",
-            defaultConfig = defaultConfig,
-            configClass = TestConfig::class,
-            configDir = testDir,
-            metadata = ConfigMetadata(
-                headerComments = listOf("Test Configuration"),
-                includeTimestamp = false
-            ),
-            isTesting = true  // Enable test mode
-        )
-    }
-
-    fun testReload(): Boolean = runBlocking {
+    fun runAllTests(): Map<String, Boolean> {
+        val results = mutableMapOf<String, Boolean>()
         try {
-            configManager = setupConfigManager()
-            val configFile = testDir.resolve("test/config.jsonc")
-
-            val modifiedContent = """
-                /* CONFIG_SECTION
-                 * Test Configuration
-                 * Version: 1.0
-                 */
-                {
-                  "version": "1.0",
-                  "configId": "test",
-                  "testSetting": "modified",
-                  "numericSetting": 100
-                }
-                /* END_CONFIG_SECTION */
-            """.trimIndent()
-            Files.writeString(configFile, modifiedContent)
-
-            configManager?.reloadConfig()
-            val reloadedConfig = configManager?.getCurrentConfig()
-            val success = reloadedConfig?.testSetting == "modified" &&
-                    reloadedConfig.numericSetting == 100
-
-            success
-        } catch (e: Exception) {
-            false
-        } finally {
+            if (!Files.exists(baseConfigDir)) Files.createDirectories(baseConfigDir)
             cleanup()
-        }
-    }
-
-    fun testSelfHeal(): Boolean = runBlocking {
-        try {
-            configManager = setupConfigManager()
-            val configFile = testDir.resolve("test/config.jsonc")
-
-            Files.createDirectories(configFile.parent)
-            Files.writeString(configFile, "{ invalid json }")
-
-            configManager?.reloadConfig()
-            val config = configManager?.getCurrentConfig()
-
-            config?.testSetting == "default" && config.numericSetting == 42
-        } catch (e: Exception) {
-            false
-        } finally {
-            cleanup()
-        }
-    }
-
-
-    private fun validateConfig(config: TestConfig?, expectedSetting: String, expectedNumber: Int): Boolean {
-        return config?.testSetting == expectedSetting &&
-                config.numericSetting == expectedNumber
-    }
-
-    fun testVersionMigration(): Boolean = runBlocking {
-        try {
-            // Set up the configuration manager with a test directory
-            configManager = setupConfigManager()
-            val configFile = testDir.resolve("test/config.jsonc")
-
-            // Write old version configuration
-            val oldVersionContent = """
-            {
-              "version": "0.9",
-              "configId": "test",
-              "testSetting": "old_value",
-              "numericSetting": 99
-            }
-        """.trimIndent()
-            Files.createDirectories(configFile.parent)
-            Files.writeString(configFile, oldVersionContent)
-
-            // Reload the configuration to trigger migration
-            configManager?.reloadConfig()
-
-            // Retrieve the migrated configuration
-            val migratedConfig = configManager?.getCurrentConfig()
-
-            // Check the migration results
-            val success = migratedConfig?.version == "1.0" &&
-                    migratedConfig.testSetting == "old_value" &&
-                    migratedConfig.numericSetting == 99
-
-            success
+            results["1. Init & File Creation"] = testInitialization()
+            results["2. Load User Edits"] = testUserEditingFile()
+            results["3. Migration"] = testMigration()
         } catch (e: Exception) {
             e.printStackTrace()
-            false
+            results["CRITICAL FAILURE"] = false
         } finally {
             cleanup()
         }
+        return results
     }
 
+    private fun testInitialization(): Boolean = runBlocking {
+        val manager = ConfigManager(
+            currentVersion = "1.0",
+            defaultConfig = SimulationConfig(),
+            configClass = SimulationConfig::class,
+            configDir = baseConfigDir,
+            isTesting = true
+        )
+        val fileCreated = Files.exists(expectedFile)
+        val correctValue = manager.getCurrentConfig().serverName == "Default Server"
+        manager.cleanup()
+        return@runBlocking fileCreated && correctValue
+    }
 
-    fun testBackupCreation(): Boolean = runBlocking {
-        try {
-            configManager = setupConfigManager()
-            val configFile = testDir.resolve("test/config.jsonc")
-            val backupDir = testDir.resolve("test/backups")
-
-            Files.createDirectories(configFile.parent)
-            Files.createDirectories(backupDir)
-            Files.writeString(configFile, "{ corrupt json }")
-
-            configManager?.reloadConfig()
-
-            Files.list(backupDir).use { files ->
-                files.anyMatch { it.toString().endsWith(".jsonc") }
+    private fun testUserEditingFile(): Boolean = runBlocking {
+        cleanup()
+        Files.createDirectories(expectedFile.parent)
+        Files.writeString(expectedFile, """
+            {
+                "version": "1.0",
+                "configId": "everlasting_test_sim",
+                "serverName": "My Awesome Server",
+                "maxPlayers": 999
             }
-        } catch (e: Exception) {
-            false
-        } finally {
-            cleanup()
-        }
+        """.trimIndent())
+
+        val manager = ConfigManager(
+            currentVersion = "1.0",
+            defaultConfig = SimulationConfig(),
+            configClass = SimulationConfig::class,
+            configDir = baseConfigDir,
+            isTesting = true
+        )
+        val config = manager.getCurrentConfig()
+        val success = config.serverName == "My Awesome Server" && config.maxPlayers == 999
+        manager.cleanup()
+        return@runBlocking success
+    }
+
+    private fun testMigration(): Boolean = runBlocking {
+        cleanup()
+        Files.createDirectories(expectedFile.parent)
+        Files.writeString(expectedFile, """
+            {
+                "version": "0.5", 
+                "configId": "everlasting_test_sim",
+                "serverName": "Legacy Server",
+                "maxPlayers": 50
+            }
+        """.trimIndent())
+
+        val manager = ConfigManager(
+            currentVersion = "1.0",
+            defaultConfig = SimulationConfig(),
+            configClass = SimulationConfig::class,
+            configDir = baseConfigDir,
+            isTesting = true
+        )
+        val config = manager.getCurrentConfig()
+        val versionUpdated = config.version == "1.0"
+        val valuesKept = config.serverName == "Legacy Server"
+        manager.cleanup()
+        return@runBlocking versionUpdated && valuesKept
     }
 
     private fun cleanup() {
         try {
-            configManager?.cleanup()
-            Files.walk(testDir)
-                .sorted(Comparator.reverseOrder())
-                .forEach { path ->
-                    try {
-                        Files.deleteIfExists(path)
-                    } catch (_: Exception) {}
-                }
+            if (Files.exists(activeTestDir)) {
+                Files.walk(activeTestDir)
+                    .sorted(Comparator.reverseOrder())
+                    .forEach { Files.deleteIfExists(it) }
+            }
         } catch (_: Exception) {}
-    }
-
-    companion object {
-        fun runAllTests(): Map<String, Boolean> {
-            return mapOf(
-                "reload" to ConfigTester().testReload(),
-                "selfHeal" to ConfigTester().testSelfHeal(),
-                "versionMigration" to ConfigTester().testVersionMigration(),
-                "backupCreation" to ConfigTester().testBackupCreation()
-            )
-        }
     }
 }

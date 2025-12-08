@@ -36,12 +36,6 @@ data class ConfigMetadata(
     }
 }
 
-class ConfigMigrationResult<T : ConfigData>(
-    val migratedConfig: T,
-    val migratedFields: Set<String>,
-    val skippedFields: Set<String>
-)
-
 class JsoncParser {
     companion object {
         private val TRAILING_COMMA = """,(\s*[}\]])""".toRegex()
@@ -63,12 +57,9 @@ class JsoncParser {
 
         while (i < content.length) {
             val c = content[i]
-
             if (inString) {
                 result.append(c)
-                if (c == '"' && !isEscaped(content, i)) {
-                    inString = false
-                }
+                if (c == '"' && !isEscaped(content, i)) inString = false
                 i++
             } else {
                 when {
@@ -81,34 +72,21 @@ class JsoncParser {
                         commentStart = i
                         val commentEnd = content.indexOf('\n', i).let { if (it == -1) content.length else it }
                         val commentText = content.substring(i + 2, commentEnd).trim()
-                        if (propertyBeforeComment.isNotBlank()) {
-                            comments[propertyBeforeComment] = commentText
-                        }
+                        if (propertyBeforeComment.isNotBlank()) comments[propertyBeforeComment] = commentText
                         i = commentEnd
-                        if (i < content.length) {
-                            result.append('\n')
-                            i++
-                        }
+                        if (i < content.length) { result.append('\n'); i++ }
                     }
                     c == '/' && i + 1 < content.length && content[i + 1] == '*' -> {
                         commentStart = i
                         val commentEnd = content.indexOf("*/", i + 2)
-                        if (commentEnd != -1) {
-                            i = commentEnd + 2
-                        } else {
-                            i = content.length
-                        }
+                        i = if (commentEnd != -1) commentEnd + 2 else content.length
                     }
                     else -> {
                         result.append(c)
                         if (c == ':' && commentStart == -1) {
                             val lineSoFar = result.toString().trim()
-                            val lastProperty = lineSoFar.substringAfterLast('"', "")
-                                .substringBeforeLast(':', "")
-                                .trim().removeSurrounding("\"")
-                            if (lastProperty.isNotBlank()) {
-                                propertyBeforeComment = lastProperty
-                            }
+                            val lastProperty = lineSoFar.substringAfterLast('"', "").substringBeforeLast(':', "").trim().removeSurrounding("\"")
+                            if (lastProperty.isNotBlank()) propertyBeforeComment = lastProperty
                         }
                         i++
                     }
@@ -121,10 +99,7 @@ class JsoncParser {
     private fun isEscaped(content: String, index: Int): Boolean {
         var count = 0
         var j = index - 1
-        while (j >= 0 && content[j] == '\\') {
-            count++
-            j--
-        }
+        while (j >= 0 && content[j] == '\\') { count++; j-- }
         return count % 2 != 0
     }
 
@@ -165,19 +140,14 @@ class ConfigManager<T : ConfigData>(
     private val logger = LoggerFactory.getLogger("ConfigManager-${defaultConfig.configId}")
     private val backupDir = configDir.resolve("${defaultConfig.configId}/backups")
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-
-    private val gson = GsonBuilder()
-        .setPrettyPrinting()
-        .disableHtmlEscaping()
-        .setLenient()
-        .serializeNulls()
-        .create()
-
+    private val gson = GsonBuilder().setPrettyPrinting().disableHtmlEscaping().setLenient().serializeNulls().create()
     private val parser = JsoncParser()
     private val dateFormatter = DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss")
 
     private val configs = ConcurrentHashMap<String, ConfigContainer<*>>()
-    private val mainConfigFileName = "${defaultConfig.configId}/config.jsonc"
+
+    // Ensure this is just the filename. Directory is handled in registerConfigInternal
+    private val mainConfigFileName = "config.jsonc"
 
     private var watcherJob: Job? = null
     private var autoSaveJob: Job? = null
@@ -194,12 +164,8 @@ class ConfigManager<T : ConfigData>(
                 meta = metadata
             )
 
-            if (metadata.watcherSettings.enabled) {
-                setupWatcher()
-            }
-            if (metadata.watcherSettings.autoSaveEnabled) {
-                startAutoSave()
-            }
+            if (metadata.watcherSettings.enabled) setupWatcher()
+            if (metadata.watcherSettings.autoSaveEnabled) startAutoSave()
         }
     }
 
@@ -239,6 +205,8 @@ class ConfigManager<T : ConfigData>(
         defaultConfig: S,
         meta: ConfigMetadata
     ) {
+        // THIS IS THE KEY PATH LOGIC
+        // It takes the base dir (config), adds the ID (wondertrade), then the filename.
         val file = configDir.resolve("${defaultConfig.configId}/$fileName")
         if (file.parent != null) Files.createDirectories(file.parent)
 
@@ -324,9 +292,7 @@ class ConfigManager<T : ConfigData>(
 
     private suspend fun <S : ConfigData> handleVersionMismatch(container: ConfigContainer<S>, oldData: S) {
         createBackup(container, "pre_migration")
-
         val merged = mergeConfigs(oldData, container.currentData, container.configClass.java)
-
         updateContainerData(container, merged)
         saveConfigContainer(container, merged)
     }
@@ -344,7 +310,6 @@ class ConfigManager<T : ConfigData>(
     private fun deepMerge(source: JsonObject, target: JsonObject) {
         for ((key, sourceElement) in source.entrySet()) {
             if (key == "version") continue
-
             if (target.has(key)) {
                 val targetElement = target.get(key)
                 if (sourceElement.isJsonObject && targetElement.isJsonObject) {
@@ -385,9 +350,7 @@ class ConfigManager<T : ConfigData>(
                 val mainDir = configDir.resolve(defaultConfig.configId)
                 val watchedKeys = mutableMapOf<WatchKey, Path>()
 
-                if (mainDir.exists()) {
-                    watchedKeys[mainDir.register(watcher, ENTRY_MODIFY)] = mainDir
-                }
+                if (mainDir.exists()) watchedKeys[mainDir.register(watcher, ENTRY_MODIFY)] = mainDir
 
                 configs.values.forEach { container ->
                     val parent = container.filePath.parent
@@ -401,15 +364,12 @@ class ConfigManager<T : ConfigData>(
                 while (isActive) {
                     val key = withContext(Dispatchers.IO) { watcher.take() }
                     val dirPath = watchedKeys[key]
-
                     if (dirPath != null) {
                         for (event in key.pollEvents()) {
                             val changedPath = dirPath.resolve(event.context() as Path)
-
                             val matchedContainer = configs.values.find {
                                 it.filePath.toAbsolutePath() == changedPath.toAbsolutePath()
                             }
-
                             if (matchedContainer != null) {
                                 delay(metadata.watcherSettings.debounceMs)
                                 reloadSingleConfig(matchedContainer)
@@ -443,9 +403,7 @@ class ConfigManager<T : ConfigData>(
     suspend fun saveConfig(config: T) {
         @Suppress("UNCHECKED_CAST")
         val container = configs[mainConfigFileName] as? ConfigContainer<T>
-        if (container != null) {
-            saveConfigContainer(container, config)
-        }
+        if (container != null) saveConfigContainer(container, config)
     }
 
     private suspend fun <S : ConfigData> saveConfigContainer(container: ConfigContainer<S>, data: S) = withContext(Dispatchers.IO) {
@@ -458,17 +416,12 @@ class ConfigManager<T : ConfigData>(
             val attrs = Files.readAttributes(container.filePath, BasicFileAttributes::class.java)
             container.lastModifiedTime.set(attrs.lastModifiedTime().toMillis())
             container.lastFileSize.set(attrs.size())
-
         } catch (e: Exception) {
             logIfNotTesting("error", "Failed to save ${container.fileName}: ${e.message}")
         }
     }
 
-    private fun buildConfigContent(
-        config: Any,
-        meta: ConfigMetadata,
-        comments: Map<String, String>
-    ): String = buildString {
+    private fun buildConfigContent(config: Any, meta: ConfigMetadata, comments: Map<String, String>): String = buildString {
         append("/* CONFIG_SECTION\n")
         meta.headerComments.forEach { append(" * $it\n") }
         if (meta.includeVersion) append(" * Version: ${currentVersion}\n")
@@ -483,7 +436,6 @@ class ConfigManager<T : ConfigData>(
             val trimmedLine = line.trim()
             if (trimmedLine.isNotEmpty()) {
                 val propertyName = trimmedLine.substringBefore(":").trim().removeSurrounding("\"")
-
                 meta.sectionComments[propertyName]?.let {
                     append(line.substringBefore(trimmedLine))
                     append("// $it\n")
@@ -492,7 +444,6 @@ class ConfigManager<T : ConfigData>(
                     append(line.substringBefore(trimmedLine))
                     append("// $it\n")
                 }
-
                 append(line)
                 if (index < lines.size - 1) append("\n")
             }
@@ -511,31 +462,9 @@ class ConfigManager<T : ConfigData>(
         reloadManually()
     }
 
-    fun enableWatcher() {
-        if (!metadata.watcherSettings.enabled) {
-            setupWatcher()
-        }
-    }
-
-    fun disableWatcher() {
-        watcherJob?.cancel()
-        watcherJob = null
-    }
-
-    fun enableAutoSave() {
-        if (!metadata.watcherSettings.autoSaveEnabled) {
-            startAutoSave()
-        }
-    }
-
-    fun disableAutoSave() {
-        autoSaveJob?.cancel()
-        autoSaveJob = null
-    }
-
-    fun cleanup() {
-        watcherJob?.cancel()
-        autoSaveJob?.cancel()
-        scope.cancel()
-    }
+    fun enableWatcher() { if (!metadata.watcherSettings.enabled) setupWatcher() }
+    fun disableWatcher() { watcherJob?.cancel(); watcherJob = null }
+    fun enableAutoSave() { if (!metadata.watcherSettings.autoSaveEnabled) startAutoSave() }
+    fun disableAutoSave() { autoSaveJob?.cancel(); autoSaveJob = null }
+    fun cleanup() { watcherJob?.cancel(); autoSaveJob?.cancel(); scope.cancel() }
 }

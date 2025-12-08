@@ -10,7 +10,6 @@ class CommandTester {
 
         private fun testCommandRegistration(): Boolean = runBlocking {
             try {
-                // Test basic command registration
                 commandManager.command("test") {
                     executes { context ->
                         1
@@ -25,7 +24,6 @@ class CommandTester {
 
         private fun testSubcommandStructure(): Boolean = runBlocking {
             try {
-                // Test nested command structure
                 commandManager.command("parent") {
                     subcommand("child1") {
                         executes { context -> 1 }
@@ -45,7 +43,6 @@ class CommandTester {
 
         private fun testPermissionConfiguration(): Boolean = runBlocking {
             try {
-                // Test permission configuration
                 commandManager.command("secured",
                     permission = "test.command.secured",
                     permissionLevel = 2,
@@ -62,7 +59,6 @@ class CommandTester {
 
         private fun testCommandAliases(): Boolean = runBlocking {
             try {
-                // Test command aliases
                 commandManager.command("main",
                     aliases = listOf("alt1", "alt2")
                 ) {
