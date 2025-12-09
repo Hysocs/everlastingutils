@@ -1,53 +1,93 @@
 package com.everlastingutils.scheduling
 
 import com.everlastingutils.utils.logDebug
+import com.google.common.util.concurrent.ThreadFactoryBuilder
 import net.minecraft.server.MinecraftServer
 import org.slf4j.LoggerFactory
-import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.Executors
-import java.util.concurrent.RejectedExecutionException
-import java.util.concurrent.ScheduledExecutorService
-import java.util.concurrent.ScheduledFuture
-import java.util.concurrent.TimeUnit
+import java.lang.ref.WeakReference
+import java.util.concurrent.*
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.math.min
 
-/**
- * Centralized scheduler system for managing scheduled tasks across multiple mods.
- * This allows for easy creation, tracking, and shutdown of scheduled tasks.
- */
+
 object SchedulerManager {
     private val logger = LoggerFactory.getLogger("EverlastingUtils-SchedulerManager")
-    private val schedulers = ConcurrentHashMap<String, ScheduledExecutorService>()
-    private val tasks = ConcurrentHashMap<String, MutableList<ScheduledFuture<*>>>()
 
-    /**
-     * Creates a new scheduler with the given ID if it doesn't already exist.
-     * The scheduler ID should include the mod ID to avoid conflicts.
-     *
-     * @param id Unique identifier for the scheduler (use format "modid-purpose")
-     * @return The ScheduledExecutorService
-     */
-    fun createScheduler(id: String): ScheduledExecutorService {
-        return schedulers.computeIfAbsent(id) {
-            logDebug("[SCHEDULER] Creating new scheduler: $id", "everlastingutils")
-            Executors.newSingleThreadScheduledExecutor { r ->
-                val thread = Thread(r, "everlastingUtils-Scheduler-$id")
-                thread.isDaemon = true
-                thread
-            }
+    private val SHARED_POOL_SIZE = min(Runtime.getRuntime().availableProcessors().coerceAtLeast(4), 8)
+
+    // Use AtomicBoolean for thread-safe operations
+    private val isShuttingDown = AtomicBoolean(false)
+
+    // Track if we need to recreate the pool
+    @Volatile
+    private var needsRecreation = false
+
+    private var sharedScheduler: ScheduledExecutorService = createSchedulerPool()
+
+    private val activeTasks = ConcurrentHashMap<String, MutableSet<ScheduledFuture<*>>>()
+    private val taskGroups = ConcurrentHashMap<String, String>()
+
+    // Lock for scheduler recreation
+    private val recreationLock = Any()
+
+    private fun createSchedulerPool(): ScheduledExecutorService {
+        return (Executors.newScheduledThreadPool(
+            SHARED_POOL_SIZE,
+            ThreadFactoryBuilder()
+                .setNameFormat("EverlastingUtils-AsyncWorker-%d")
+                .setDaemon(true)
+                .build()
+        ) as ScheduledThreadPoolExecutor).apply {
+            removeOnCancelPolicy = true
         }
     }
 
-    /**
-     * Schedules a task to run periodically with the given initial delay and period.
-     *
-     * @param id Scheduler identifier (use format "modid-purpose")
-     * @param server MinecraftServer instance
-     * @param initialDelay Initial delay before first execution
-     * @param period Period between successive executions
-     * @param unit Time unit for delay and period
-     * @param task Task to execute
-     * @return The ScheduledFuture representing the scheduled task
-     */
+    init {
+        Runtime.getRuntime().addShutdownHook(Thread({
+            try {
+                if (isShuttingDown.compareAndSet(false, true)) {
+                    logger.info("JVM shutdown detected - cancelling tasks...")
+                    cancelAllTasksInternal()
+                }
+            } catch (_: Exception) {
+            }
+        }, "EverlastingUtils-ShutdownHook"))
+    }
+
+    /** Call this from your mod's server stopping event */
+    @JvmStatic
+    fun onServerStopping(server: MinecraftServer) {
+        logger.info("Server stopping → cancelling all scheduled tasks...")
+        shutdownAll()
+    }
+
+    /** Call this from your mod's server starting event to reset state */
+    @JvmStatic
+    fun onServerStarting(server: MinecraftServer) {
+        synchronized(recreationLock) {
+            logger.info("Server starting - resetting scheduler state")
+
+            // Always reset shutdown flag first
+            isShuttingDown.set(false)
+
+            if (needsRecreation || sharedScheduler.isShutdown || sharedScheduler.isTerminated) {
+                logger.info("Recreating scheduler pool for new server instance...")
+                sharedScheduler = createSchedulerPool()
+                needsRecreation = false
+            }
+
+            logDebug("[SCHEDULER] Ready for server start", "everlastingutils")
+        }
+    }
+
+    @JvmStatic
+    fun createScheduler(id: String): ScheduledExecutorService {
+        ensureSchedulerAvailable()
+        logDebug("[SCHEDULER] Created scheduler: $id", "everlastingutils")
+        return SafeDelegatingScheduler(id, sharedScheduler)
+    }
+
+    @JvmStatic
     fun scheduleAtFixedRate(
         id: String,
         server: MinecraftServer,
@@ -56,37 +96,60 @@ object SchedulerManager {
         unit: TimeUnit,
         task: () -> Unit
     ): ScheduledFuture<*> {
-        val scheduler = createScheduler(id)
-        val future = scheduler.scheduleAtFixedRate({
-            if (!server.isRunning) {
-                return@scheduleAtFixedRate
-            }
-            try {
-                server.executeSync {
-                    if (server.isRunning) {
-                        task()
-                    }
-                }
-            } catch (e: RejectedExecutionException) {
-            } catch (e: Exception) {
-                logger.error("Error executing scheduled task in $id: ${e.message}", e)
-            }
-        }, initialDelay, period, unit)
+        require(initialDelay >= 0) { "initialDelay must be non-negative" }
+        require(period > 0) { "period must be positive" }
 
-        tasks.computeIfAbsent(id) { mutableListOf() }.add(future)
+        // Check shutdown state and ensure scheduler is available
+        if (!ensureSchedulerAvailable()) {
+            logger.warn("Cannot schedule task '$id' - scheduler is shutting down")
+            return CancelledFuture()
+        }
+
+        val serverRef = WeakReference(server)
+        val futureHolder = arrayOfNulls<ScheduledFuture<*>>(1)
+
+        val future = try {
+            sharedScheduler.scheduleWithFixedDelay({
+                val srv = serverRef.get()
+
+                // Check all conditions before executing
+                if (srv == null || !srv.isRunning || srv.isStopped || isShuttingDown.get()) {
+                    futureHolder[0]?.let { untrackAndCancel(id, it) }
+                    return@scheduleWithFixedDelay
+                }
+
+                try {
+                    srv.execute {
+                        if (srv.isRunning && !srv.isStopped && !isShuttingDown.get()) {
+                            try {
+                                task()
+                            } catch (t: Throwable) {
+                                logger.error("Task '$id' threw exception - cancelling", t)
+                                futureHolder[0]?.let { untrackAndCancel(id, it) }
+                            }
+                        }
+                    }
+                } catch (e: RejectedExecutionException) {
+                    futureHolder[0]?.let { untrackAndCancel(id, it) }
+                }
+            }, initialDelay, period, unit)
+        } catch (e: RejectedExecutionException) {
+            logger.error("Failed to schedule task '$id' - executor rejected", e)
+            return CancelledFuture()
+        }
+
+        // Double-check shutdown state after scheduling
+        if (isShuttingDown.get()) {
+            future.cancel(false)
+            return CancelledFuture()
+        }
+
+        futureHolder[0] = future
+        trackTask(id, future)
         return future
     }
 
-    /**
-     * Schedules a one-time task with the given delay.
-     *
-     * @param id Scheduler identifier (use format "modid-purpose")
-     * @param server MinecraftServer instance
-     * @param delay Delay before execution
-     * @param unit Time unit for delay
-     * @param task Task to execute
-     * @return The ScheduledFuture representing the scheduled task
-     */
+    @JvmStatic
     fun schedule(
         id: String,
         server: MinecraftServer,
@@ -94,71 +157,212 @@ object SchedulerManager {
         unit: TimeUnit,
         task: () -> Unit
     ): ScheduledFuture<*> {
-        val scheduler = createScheduler(id)
-        val future = scheduler.schedule({
-            if (!server.isRunning) {
-                return@schedule
-            }
-            try {
-                server.executeSync {
-                    if (server.isRunning) {
-                        task()
-                    }
-                }
-            } catch (e: RejectedExecutionException) {
-            } catch (e: Exception) {
-                logger.error("Error executing scheduled task in $id: ${e.message}", e)
-            }
-        }, delay, unit)
+        require(delay >= 0) { "delay must be non-negative" }
 
-        tasks.computeIfAbsent(id) { mutableListOf() }.add(future)
+        if (!ensureSchedulerAvailable()) {
+            logger.warn("Cannot schedule task '$id' - scheduler is shutting down")
+            return CancelledFuture()
+        }
+
+        val serverRef = WeakReference(server)
+        val futureHolder = arrayOfNulls<ScheduledFuture<*>>(1)
+
+        val future = try {
+            sharedScheduler.schedule({
+                val srv = serverRef.get()
+
+                if (srv == null || !srv.isRunning || srv.isStopped || isShuttingDown.get()) {
+                    futureHolder[0]?.let { untrackTask(id, it) }
+                    return@schedule
+                }
+
+                try {
+                    srv.execute {
+                        if (srv.isRunning && !srv.isStopped && !isShuttingDown.get()) {
+                            try {
+                                task()
+                            } catch (t: Throwable) {
+                                logger.error("Task '$id' threw exception", t)
+                            } finally {
+                                futureHolder[0]?.let { untrackTask(id, it) }
+                            }
+                        }
+                    }
+                } catch (e: RejectedExecutionException) {
+                    futureHolder[0]?.let { untrackTask(id, it) }
+                }
+            }, delay, unit)
+        } catch (e: RejectedExecutionException) {
+            logger.error("Failed to schedule task '$id' - executor rejected", e)
+            return CancelledFuture()
+        }
+
+        if (isShuttingDown.get()) {
+            future.cancel(false)
+            return CancelledFuture()
+        }
+
+        futureHolder[0] = future
+        trackTask(id, future)
         return future
     }
 
-    /**
-     * Cancels all tasks for a specific scheduler ID.
-     *
-     * @param id Scheduler identifier
-     * @param mayInterruptIfRunning Whether to interrupt running tasks
-     */
-    fun cancelTasks(id: String, mayInterruptIfRunning: Boolean = false) {
-        tasks[id]?.forEach { future ->
-            future.cancel(mayInterruptIfRunning)
-        }
-        tasks[id]?.clear()
-        logDebug("[SCHEDULER] Cancelled all tasks for scheduler: $id", "everlastingutils")
-    }
-
-    /**
-     * Shuts down a specific scheduler.
-     *
-     * @param id Scheduler identifier
-     */
+    @JvmStatic
     fun shutdown(id: String) {
-        cancelTasks(id)
-        schedulers[id]?.shutdown()
-        schedulers.remove(id)
-        tasks.remove(id) // Also remove the task list to prevent memory leaks
-        logDebug("[SCHEDULER] Shut down scheduler: $id", "everlastingutils")
+        cancelTasks(id, true)
+        activeTasks.remove(id)
+        taskGroups.entries.removeIf { it.value == id }
+        logDebug("[SCHEDULER] Shutdown scheduler: $id", "everlastingutils")
     }
 
-    /**
-     * Shuts down all schedulers.
-     */
+    @JvmStatic
     fun shutdownAll() {
-        val allIds = schedulers.keys().toList()
-        allIds.forEach { id ->
-            shutdown(id)
+        if (!isShuttingDown.compareAndSet(false, true)) {
+            // Already shutting down
+            return
         }
-        logDebug("[SCHEDULER] Shut down all schedulers", "everlastingutils")
+
+        cancelAllTasksInternal()
+
+        // Shutdown the pool
+        sharedScheduler.shutdown()
+        try {
+            if (!sharedScheduler.awaitTermination(5, TimeUnit.SECONDS)) {
+                sharedScheduler.shutdownNow()
+                if (!sharedScheduler.awaitTermination(2, TimeUnit.SECONDS)) {
+                    logger.warn("Some tasks did not terminate")
+                }
+            }
+        } catch (e: InterruptedException) {
+            sharedScheduler.shutdownNow()
+            Thread.currentThread().interrupt()
+        }
+
+        needsRecreation = true
+        logDebug("[SCHEDULER] Global shutdown complete", "everlastingutils")
     }
 
-    /**
-     * Gets stats about all active schedulers.
-     *
-     * @return Map of scheduler IDs to the number of active tasks
-     */
+    @JvmStatic
+    fun cancelTasks(id: String, mayInterruptIfRunning: Boolean = false) {
+        activeTasks.remove(id)?.forEach { future ->
+            try {
+                future.cancel(mayInterruptIfRunning)
+            } catch (_: Exception) {}
+        }
+
+        taskGroups.entries.removeIf { it.key == id }
+    }
+
+    @JvmStatic
     fun getStats(): Map<String, Int> {
-        return tasks.mapValues { it.value.size }
+        return activeTasks.mapValues { (_, taskSet) ->
+            try {
+                taskSet.toList().count { !it.isDone && !it.isCancelled }
+            } catch (e: ConcurrentModificationException) {
+                0
+            }
+        }
+    }
+
+    @JvmStatic
+    fun getSkippedExecutionCount(id: String): Long {
+        return 0L
+    }
+
+    @JvmStatic
+    fun assignTaskGroup(taskId: String, groupId: String) {
+        taskGroups[taskId] = groupId
+    }
+
+    @JvmStatic
+    fun cancelTaskGroup(groupId: String) {
+        val tasksInGroup = taskGroups.entries
+            .filter { it.value == groupId }
+            .map { it.key }
+            .toList()
+
+        tasksInGroup.forEach { taskId ->
+            cancelTasks(taskId, true)
+        }
+    }
+
+    private fun ensureSchedulerAvailable(): Boolean {
+        synchronized(recreationLock) {
+            if (sharedScheduler.isShutdown || sharedScheduler.isTerminated) {
+                if (!isShuttingDown.get()) {
+                    logger.warn("Scheduler was shutdown but not in shutdown state - recreating...")
+                    sharedScheduler = createSchedulerPool()
+                    needsRecreation = false
+                    return true
+                }
+                return false
+            }
+            return !isShuttingDown.get()
+        }
+    }
+
+    private fun cancelAllTasksInternal() {
+        activeTasks.values.forEach { taskSet ->
+            taskSet.forEach { future ->
+                try {
+                    future.cancel(false)
+                } catch (_: Exception) {}
+            }
+        }
+
+        activeTasks.clear()
+        taskGroups.clear()
+    }
+
+    private fun trackTask(id: String, future: ScheduledFuture<*>) {
+        activeTasks.compute(id) { _, existing ->
+            val taskSet = existing ?: ConcurrentHashMap.newKeySet()
+            taskSet.add(future)
+            taskSet
+        }
+    }
+
+    private fun untrackTask(id: String, future: ScheduledFuture<*>?) {
+        if (future != null) {
+            activeTasks.computeIfPresent(id) { _, taskSet ->
+                taskSet.remove(future)
+                if (taskSet.isEmpty()) null else taskSet
+            }
+        } else {
+            activeTasks.computeIfPresent(id) { _, taskSet ->
+                taskSet.removeIf { it.isDone || it.isCancelled }
+                if (taskSet.isEmpty()) null else taskSet
+            }
+        }
+    }
+
+    private fun untrackAndCancel(id: String, future: ScheduledFuture<*>) {
+        try {
+            future.cancel(false)
+        } catch (_: Exception) {}
+        untrackTask(id, future)
+    }
+
+    private class CancelledFuture : ScheduledFuture<Any?> {
+        override fun cancel(mayInterruptIfRunning: Boolean) = true
+        override fun isCancelled() = true
+        override fun isDone() = true
+        override fun get(): Any? = throw CancellationException()
+        override fun get(timeout: Long, unit: TimeUnit): Any? = throw CancellationException()
+        override fun getDelay(unit: TimeUnit) = 0L
+        override fun compareTo(other: Delayed) = -1
+    }
+
+    private class SafeDelegatingScheduler(
+        private val id: String,
+        private val delegate: ScheduledExecutorService
+    ) : ScheduledExecutorService by delegate {
+        override fun shutdown() = SchedulerManager.shutdown(id)
+
+        override fun shutdownNow(): MutableList<Runnable> {
+            SchedulerManager.cancelTasks(id, true)
+            SchedulerManager.shutdown(id)
+            return mutableListOf()
+        }
     }
 }
