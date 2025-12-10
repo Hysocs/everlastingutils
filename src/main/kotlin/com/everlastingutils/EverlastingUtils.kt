@@ -15,7 +15,7 @@ import java.time.format.DateTimeFormatter
 object EverlastingUtils : ModInitializer {
     private val logger = LoggerFactory.getLogger("everlastingutils")
     const val MOD_ID = "everlastingutils"
-    const val VERSION = "1.1.1"
+    const val VERSION = "1.1.2"
 
     object Colors {
         private const val ESC = "\u001B"
