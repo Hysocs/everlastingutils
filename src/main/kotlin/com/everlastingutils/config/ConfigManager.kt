@@ -205,8 +205,7 @@ class ConfigManager<T : ConfigData>(
         defaultConfig: S,
         meta: ConfigMetadata
     ) {
-        // THIS IS THE KEY PATH LOGIC
-        // It takes the base dir (config), adds the ID (wondertrade), then the filename.
+
         val file = configDir.resolve("${defaultConfig.configId}/$fileName")
         if (file.parent != null) Files.createDirectories(file.parent)
 
@@ -230,7 +229,14 @@ class ConfigManager<T : ConfigData>(
     }
 
     private suspend fun reloadSingleConfig(container: ConfigContainer<*>) = withContext(Dispatchers.IO) {
-        if (!container.filePath.exists()) return@withContext
+
+        if (!container.filePath.exists()) {
+            logIfNotTesting("warn", "File ${container.fileName} is missing. Regenerating.")
+            @Suppress("UNCHECKED_CAST")
+            val typedContainer = container as ConfigContainer<ConfigData>
+            saveConfigContainer(typedContainer, typedContainer.currentData)
+            return@withContext
+        }
 
         try {
             val attrs = Files.readAttributes(container.filePath, BasicFileAttributes::class.java)
@@ -250,8 +256,13 @@ class ConfigManager<T : ConfigData>(
 
         try {
             val content = Files.readString(container.filePath, Charsets.UTF_8)
+
+
             if (content.isBlank()) {
-                logIfNotTesting("warn", "File ${container.fileName} is empty. Ignoring.")
+                logIfNotTesting("warn", "File ${container.fileName} is empty. Regenerating defaults.")
+                @Suppress("UNCHECKED_CAST")
+                val typedContainer = container as ConfigContainer<ConfigData>
+                saveConfigContainer(typedContainer, typedContainer.currentData)
                 return@withContext
             }
 
@@ -268,6 +279,12 @@ class ConfigManager<T : ConfigData>(
         val (jsonContent, comments) = parser.parseWithComments(content)
         try {
             val parsed = gson.fromJson(jsonContent, container.configClass.java)
+
+
+            if (parsed == null) {
+                logIfNotTesting("warn", "File ${container.fileName} contained invalid JSON structure. Using defaults.")
+                return
+            }
 
             container.currentComments.clear()
             container.currentComments.putAll(comments)
@@ -405,7 +422,15 @@ class ConfigManager<T : ConfigData>(
         val container = configs[mainConfigFileName] as? ConfigContainer<T>
         if (container != null) saveConfigContainer(container, config)
     }
-
+    suspend fun <S : ConfigData> saveSecondaryConfig(fileName: String, config: S) {
+        @Suppress("UNCHECKED_CAST")
+        val container = configs[fileName] as? ConfigContainer<S>
+        if (container != null) {
+            saveConfigContainer(container, config)
+        } else {
+            logIfNotTesting("warn", "Attempted to save unknown secondary config: $fileName")
+        }
+    }
     private suspend fun <S : ConfigData> saveConfigContainer(container: ConfigContainer<S>, data: S) = withContext(Dispatchers.IO) {
         try {
             val content = buildConfigContent(data, container.metadata, container.currentComments)
