@@ -487,9 +487,13 @@ class ConfigManager<T : ConfigData>(
         reloadManually()
     }
 
+
     fun enableWatcher() { if (!metadata.watcherSettings.enabled) setupWatcher() }
     fun disableWatcher() { watcherJob?.cancel(); watcherJob = null }
     fun enableAutoSave() { if (!metadata.watcherSettings.autoSaveEnabled) startAutoSave() }
     fun disableAutoSave() { autoSaveJob?.cancel(); autoSaveJob = null }
     fun cleanup() { watcherJob?.cancel(); autoSaveJob?.cancel(); scope.cancel() }
+    fun unregisterConfig(fileName: String) {
+        configs.remove(fileName)
+    }
 }
